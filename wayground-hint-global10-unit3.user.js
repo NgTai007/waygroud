@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Wayground Hint - Global 10 Unit 3 (72 answers)
 // @namespace    local.wayground.hint.global10unit3
-// @version      1.0
-// @description  Show the correct vocabulary answer for the Global 10 Unit 3 assignment on Wayground. Visual hint only: no auto-fill, no auto-submit.
+// @version      1.1
+// @description  Compact mobile answer pill for the Global 10 Unit 3 assignment on Wayground. Does not color the answer input. No auto-fill, no auto-submit.
 // @match        https://wayground.com/*
 // @match        https://*.wayground.com/*
 // @match        https://quizizz.com/*
@@ -180,17 +180,6 @@
 
   const style = document.createElement('style');
   style.textContent = `
-    [data-wg-hit] {
-      background: #f0fdf4 !important;
-      border-color: #16a34a !important;
-      box-shadow: inset 3px 0 0 #16a34a, 0 0 0 2px rgba(22, 163, 74, .18) !important;
-      transition: background-color .15s ease, box-shadow .15s ease, border-color .15s ease;
-    }
-    html.dark [data-wg-hit], body.dark [data-wg-hit] {
-      background: rgba(22, 163, 74, .16) !important;
-      border-color: #22c55e !important;
-      box-shadow: inset 3px 0 0 #22c55e, 0 0 0 2px rgba(34, 197, 94, .22) !important;
-    }
     #wg-hint-panel {
       position: fixed;
       z-index: 2147483647;
@@ -199,24 +188,25 @@
       transform: translateX(-50%);
       display: flex;
       align-items: center;
-      gap: 8px;
-      max-width: calc(100vw - 24px);
+      gap: 7px;
+      max-width: min(calc(100vw - 18px), 380px);
       box-sizing: border-box;
-      padding: 8px 12px;
+      padding: 7px 10px;
       border: 1px solid #16a34a;
-      border-radius: 999px;
+      border-radius: 12px;
       background: #f0fdf4;
       color: #14532d;
-      box-shadow: 0 6px 24px rgba(0, 0, 0, .18);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, .16);
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-      font-size: 15px;
-      line-height: 1.25;
+      font-size: 14px;
+      line-height: 1.2;
       pointer-events: auto;
     }
     #wg-hint-panel .wg-label {
-      font-size: 11px;
+      flex: 0 0 auto;
+      font-size: 10px;
       font-weight: 700;
-      letter-spacing: .04em;
+      letter-spacing: .03em;
       text-transform: uppercase;
       color: #15803d;
       white-space: nowrap;
@@ -252,19 +242,38 @@
       color: #dcfce7;
     }
     html.wg-hint-hidden #wg-hint-panel { display: none !important; }
-    html.wg-hint-hidden [data-wg-hit] {
-      background: transparent !important;
-      border-color: inherit !important;
-      box-shadow: none !important;
-    }
     @media (max-width: 480px) {
       #wg-hint-panel {
-        left: 12px;
-        right: 12px;
-        bottom: calc(92px + env(safe-area-inset-bottom, 0px));
-        transform: none;
-        max-width: none;
-        justify-content: center;
+        left: 50%;
+        right: auto;
+        bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+        transform: translateX(-50%);
+        max-width: calc(100vw - 18px);
+        padding: 6px 9px;
+        gap: 6px;
+        font-size: 13px;
+        border-radius: 10px;
+      }
+      #wg-hint-panel .wg-label { font-size: 9px; }
+      #wg-hint-panel .wg-close {
+        width: 22px;
+        height: 22px;
+        font-size: 14px;
+        line-height: 22px;
+      }
+    }
+    @media (max-width: 360px) {
+      #wg-hint-panel {
+        font-size: 12px;
+        padding: 5px 8px;
+        gap: 5px;
+      }
+      #wg-hint-panel .wg-label { display: none; }
+      #wg-hint-panel .wg-close {
+        width: 20px;
+        height: 20px;
+        font-size: 13px;
+        line-height: 20px;
       }
     }
   `;
@@ -343,16 +352,11 @@
     return style.visibility !== 'hidden' && style.display !== 'none';
   }
 
-  function clearHits() {
-    document.querySelectorAll('[data-wg-hit]').forEach((el) => el.removeAttribute('data-wg-hit'));
-  }
-
   function refresh() {
     if (!document.body) return;
     const inputs = Array.from(document.querySelectorAll('input[data-testid^="fib-text-input-"]'));
     const visible = inputs.filter(isVisible);
     if (!visible.length) {
-      clearHits();
       const p = ensurePanel();
       p.style.display = 'none';
       return;
@@ -365,22 +369,15 @@
       const prompt = getPrompt(input);
       const answer = ANSWER_BY_QID[qid] || ANSWER_BY_PROMPT[prompt] || '';
       if (!answer) return;
-      const blank = input.closest('[data-testid^="fib-text-blank-"]');
-      if (blank) blank.setAttribute('data-wg-hit', '1');
       answers.push(answer);
-      if (!chosen) chosen = { input, qid, prompt, answer, blank };
+      if (!chosen) chosen = { qid, prompt, answer };
     });
 
     if (!chosen) {
-      clearHits();
       const p = ensurePanel();
       p.style.display = 'none';
       return;
     }
-
-    document.querySelectorAll('[data-wg-hit]').forEach((el) => {
-      if (!el.contains(chosen.input)) el.removeAttribute('data-wg-hit');
-    });
 
     const p = ensurePanel();
     p.style.display = hiddenByToggle ? 'none' : '';
