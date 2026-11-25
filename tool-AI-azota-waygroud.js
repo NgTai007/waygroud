@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Study Hint - Azota + Wayground
 // @namespace    local.studyhint
-// @version      3.0.0
+// @version      3.1.0
 // @description  AI-only answer hints for Azota + Wayground. Every question is solved by Gemini; no answer banks are bundled. No auto-fill, no auto-click, no auto-submit.
 // @match        https://azota.vn/*
 // @match        https://*.azota.vn/*
@@ -69,17 +69,22 @@
     endpoint: store.get('studyHintEndpoint').trim().replace(/\/+$/, ''),
     key: gmStore.get('studyHintGeminiKey').trim(),
     model: gmStore.get('studyHintGeminiModel').trim() || 'gemini-3.5-flash-lite',
-    fallbackModel: gmStore.get('studyHintGeminiFallback').trim() || 'gemini-3.1-flash-lite',
+    fallbackModel: gmStore.get('studyHintGeminiFallback').trim() || 'gemini-2.5-flash-lite',
     directBase: 'https://generativelanguage.googleapis.com/v1beta',
     auto: store.get('studyHintAutoAI') !== '0',
-    minConfidence: 0.7,
+    minConfidence: 0.5,
     maxCalls: 0,
+    lastError: '',
   };
+
+  let modelCache = null;
 
   const hasAI = () => !!(AI.endpoint || AI.key);
 
   let aiCalls = 0;
   let aiBusy = false;
+  let stickyKey = '';
+  let stickyUntil = 0;
   const autoAsked = new Set();
   const aiMemory = new Map();
   const questionMemory = new Map();
@@ -116,6 +121,15 @@
     const list = toList(ans);
     if (list.length <= 1) return list[0] || '';
     return list.map((x, i) => `${i + 1}. ${x}`).join(' · ');
+  };
+
+  const formatMcqAnswer = (ans, options) => {
+    const list = toList(ans);
+    const opts = options || [];
+    return list.map((value) => {
+      const idx = opts.findIndex((o) => normOption(o) === normOption(value));
+      return idx >= 0 ? String.fromCharCode(65 + idx) + '. ' + value : value;
+    }).join(' · ');
   };
 
   const cleanText = (s, limit) => String(s == null ? '' : s)
@@ -233,8 +247,8 @@
       z-index: 2147483646;
       right: calc(8px + env(safe-area-inset-right, 0px));
       bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-      width: 30px;
-      height: 30px;
+      width: 34px;
+      height: 34px;
       padding: 0;
       border: 1px solid #16a34a;
       border-radius: 999px;
@@ -243,8 +257,8 @@
       box-shadow: 0 2px 10px rgba(0, 0, 0, .14);
       cursor: pointer;
       font: inherit;
-      font-size: 16px;
-      line-height: 28px;
+      font-size: 17px;
+      line-height: 32px;
       opacity: .58;
     }
     #study-hint-settings-btn:hover { opacity: 1; }
@@ -293,7 +307,7 @@
       margin: 9px 0;
       font-weight: 600;
     }
-    #study-hint-settings .sh-field input[type="url"] {
+    #study-hint-settings .sh-field input {
       display: block;
       width: 100%;
       box-sizing: border-box;
@@ -342,11 +356,15 @@
       margin-top: 8px;
       color: #15803d;
       font-size: 12px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
     }
+    #study-hint-settings .sh-status.sh-err { color: #b91c1c; }
+    #study-hint-settings .sh-status.sh-warn { color: #b45309; }
     html.dark #study-hint-settings .sh-modal,
     body.dark #study-hint-settings .sh-modal { background: #111827; color: #f9fafb; }
-    html.dark #study-hint-settings .sh-field input[type="url"],
-    body.dark #study-hint-settings .sh-field input[type="url"] {
+    html.dark #study-hint-settings .sh-field input,
+    body.dark #study-hint-settings .sh-field input {
       background: #1f2937;
       border-color: #374151;
       color: #f9fafb;
@@ -357,6 +375,10 @@
     body.dark #study-hint-settings button { background: #374151; color: #f9fafb; }
     html.dark #study-hint-settings button.sh-primary,
     body.dark #study-hint-settings button.sh-primary { background: #16a34a; color: #fff; }
+    html.dark #study-hint-settings .sh-status.sh-err,
+    body.dark #study-hint-settings .sh-status.sh-err { color: #fca5a5; }
+    html.dark #study-hint-settings .sh-status.sh-warn,
+    body.dark #study-hint-settings .sh-status.sh-warn { color: #fcd34d; }
 
     .item-answer[data-study-hit] .answer-content {
       background: #f0fdf4 !important;
@@ -402,9 +424,16 @@
         border-radius: 10px;
       }
       #study-hint-panel .sh-label { font-size: 9px; }
-      #study-hint-panel .sh-ai, #study-hint-panel .sh-close, #study-hint-panel .sh-gear { height: 22px; }
-      #study-hint-panel .sh-close, #study-hint-panel .sh-gear { width: 22px; font-size: 14px; line-height: 22px; }
-      #study-hint-settings .sh-modal { padding: 12px; }
+      #study-hint-panel .sh-ai, #study-hint-panel .sh-close, #study-hint-panel .sh-gear { height: 26px; }
+      #study-hint-panel .sh-close, #study-hint-panel .sh-gear { width: 26px; font-size: 15px; line-height: 26px; }
+      #study-hint-settings { align-items: flex-start; padding: 8vh 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+      #study-hint-settings .sh-modal {
+        padding: 12px;
+        max-height: calc(100dvh - 8vh - 10px);
+        -webkit-overflow-scrolling: touch;
+      }
+      #study-hint-settings .sh-field input { font-size: 16px; }
+      #study-hint-settings button { min-height: 38px; }
     }
     @media (max-width: 360px) {
       #study-hint-panel { font-size: 12px; padding: 5px 8px; gap: 5px; }
@@ -516,6 +545,7 @@
   let settings = null;
   let settingsEndpoint = null;
   let settingsKey = null;
+  let settingsModel = null;
   let settingsAuto = null;
   let settingsStatus = null;
 
@@ -550,10 +580,20 @@
     keyLabel.textContent = 'Gemini API key (nếu không dùng server)';
     settingsKey = document.createElement('input');
     settingsKey.type = 'password';
-    settingsKey.placeholder = 'AIza...';
+    settingsKey.placeholder = 'AIza... hoặc AQ...';
     settingsKey.autocomplete = 'new-password';
     settingsKey.spellcheck = false;
     keyLabel.appendChild(settingsKey);
+
+    const modelLabel = document.createElement('label');
+    modelLabel.className = 'sh-field';
+    modelLabel.textContent = 'Model Gemini (để trống = mặc định)';
+    settingsModel = document.createElement('input');
+    settingsModel.type = 'text';
+    settingsModel.placeholder = 'gemini-3.5-flash-lite';
+    settingsModel.autocomplete = 'off';
+    settingsModel.spellcheck = false;
+    modelLabel.appendChild(settingsModel);
 
     const checkLabel = document.createElement('label');
     checkLabel.className = 'sh-check';
@@ -565,7 +605,7 @@
 
     const note = document.createElement('p');
     note.className = 'sh-note';
-    note.textContent = 'Cách đơn giản: chỉ dán key Gemini, để trống Server AI. Key lưu trong Tampermonkey trên máy này, không nằm trong file script. Không dùng key cũ đã lộ. Đáp án tĩnh vẫn ưu tiên trước; không auto-fill, không auto-submit.';
+    note.textContent = 'Cách đơn giản: chỉ dán key Gemini, để trống Server AI. Key lưu trong Tampermonkey trên máy này, không nằm trong file script. Bấm "Kiểm tra key" để chắc key và model đang chạy. Không auto-fill, không auto-submit.';
 
     const actions = document.createElement('div');
     actions.className = 'sh-actions';
@@ -582,23 +622,63 @@
         endpoint += '/solve';
       }
       const newKey = settingsKey.value.trim();
+      const newModel = settingsModel.value.trim();
       AI.endpoint = endpoint;
       if (newKey) AI.key = newKey;
       AI.auto = !!settingsAuto.checked;
+      if (newModel) {
+        AI.model = newModel;
+        gmStore.set('studyHintGeminiModel', newModel);
+      } else {
+        AI.model = 'gemini-3.5-flash-lite';
+        gmStore.set('studyHintGeminiModel', '');
+      }
+      modelCache = null;
       store.set('studyHintEndpoint', AI.endpoint);
       store.set('studyHintAutoAI', AI.auto ? '1' : '0');
       if (newKey) gmStore.set('studyHintGeminiKey', AI.key);
       settingsKey.value = '';
       settingsKey.placeholder = AI.key
         ? 'Đã lưu key trên máy (để trống nếu không đổi)'
-        : 'AIza...';
+        : 'AIza... hoặc AQ...';
       autoAsked.clear();
-      settingsStatus.textContent = endpoint
+      stickyKey = '';
+      stickyUntil = 0;
+      setStatus(endpoint
         ? 'Đã lưu server. Đang thử câu hiện tại...'
         : AI.key
           ? 'Đã lưu key Gemini. Đang thử câu hiện tại...'
-          : 'Chưa có key/server AI.';
+          : 'Chưa có key/server AI.');
       setTimeout(() => { settings.hidden = true; schedule(); }, 350);
+    });
+
+    const test = document.createElement('button');
+    test.type = 'button';
+    test.textContent = 'Kiểm tra key';
+    test.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const typed = settingsKey.value.trim();
+      setStatus('Đang kiểm tra key...');
+      test.disabled = true;
+      let res;
+      try {
+        res = await testAI(typed);
+      } catch (err) {
+        res = { ok: false, message: 'Lỗi kiểm tra: ' + shortText(err && err.message, 100) };
+      }
+      test.disabled = false;
+      if (res.ok && typed) {
+        AI.key = typed;
+        AI.lastError = '';
+        modelCache = null;
+        gmStore.set('studyHintGeminiKey', typed);
+        settingsKey.value = '';
+        settingsKey.placeholder = 'Đã lưu key trên máy (để trống nếu không đổi)';
+        setStatus(res.message + ' · đã lưu key');
+      } else {
+        setStatus(res.message, res.ok ? '' : 'err');
+      }
     });
 
     const clearKey = document.createElement('button');
@@ -611,9 +691,12 @@
       AI.key = '';
       gmStore.set('studyHintGeminiKey', '');
       settingsKey.value = '';
-      settingsKey.placeholder = 'AIza...';
+      settingsKey.placeholder = 'AIza... hoặc AQ...';
       autoAsked.clear();
-      settingsStatus.textContent = 'Đã xoá key Gemini trên máy.';
+      modelCache = null;
+      stickyKey = '';
+      stickyUntil = 0;
+      setStatus('Đã xoá key Gemini trên máy.');
     });
 
     const clear = document.createElement('button');
@@ -635,7 +718,9 @@
       aiMemory.clear();
       questionMemory.clear();
       autoAsked.clear();
-      settingsStatus.textContent = 'Đã xoá ' + removed + ' mục cache.';
+      stickyKey = '';
+      stickyUntil = 0;
+      setStatus('Đã xoá ' + removed + ' mục cache.');
     });
 
     const close = document.createElement('button');
@@ -649,14 +734,20 @@
 
     settingsStatus = document.createElement('div');
     settingsStatus.className = 'sh-status';
+    const setStatus = (text, kind) => {
+      settingsStatus.textContent = text || '';
+      settingsStatus.className = 'sh-status' + (kind ? ' sh-' + kind : '');
+    };
 
     actions.appendChild(save);
+    actions.appendChild(test);
     actions.appendChild(clearKey);
     actions.appendChild(clear);
     actions.appendChild(close);
     modal.appendChild(title);
     modal.appendChild(endpointLabel);
     modal.appendChild(keyLabel);
+    modal.appendChild(modelLabel);
     modal.appendChild(checkLabel);
     modal.appendChild(note);
     modal.appendChild(actions);
@@ -675,15 +766,76 @@
     settingsKey.value = '';
     settingsKey.placeholder = AI.key
       ? 'Đã lưu key trên máy (để trống nếu không đổi)'
-      : 'AIza...';
+      : 'AIza... hoặc AQ...';
+    settingsModel.value = gmStore.get('studyHintGeminiModel').trim();
+    settingsModel.placeholder = AI.model;
     settingsAuto.checked = AI.auto;
-    settingsStatus.textContent = AI.endpoint
+    const base = AI.endpoint
       ? 'Server đang dùng: ' + AI.endpoint
       : AI.key
-        ? 'Đang dùng Gemini trực tiếp (key lưu trên máy).'
+        ? 'Đang dùng Gemini trực tiếp · ' + AI.model
         : 'Chưa cấu hình AI: dán key Gemini để bật.';
+    settingsStatus.className = 'sh-status' + (AI.lastError ? ' sh-warn' : '');
+    settingsStatus.textContent = AI.lastError ? base + ' · Lỗi gần nhất: ' + shortText(AI.lastError, 90) : base;
     settings.hidden = false;
     setTimeout(() => (AI.endpoint ? settingsEndpoint : settingsKey).focus(), 50);
+  }
+
+  async function testAI(keyOverride) {
+    const key = (keyOverride || AI.key || '').trim();
+    if (!key && !AI.endpoint) return { ok: false, message: 'Chưa có key/server AI.' };
+
+    const started = Date.now();
+    if (AI.endpoint) {
+      try {
+        await postJSON(AI.endpoint, {
+          site: 'test',
+          qid: 'ping',
+          question: '2 + 2 = ?',
+          options: [],
+          type: 'fill',
+          blanks: 0,
+        });
+        return { ok: true, message: 'Server OK · ' + (Date.now() - started) + ' ms' };
+      } catch (e) {
+        return { ok: false, message: 'Server lỗi: ' + shortText(e && e.message, 120) };
+      }
+    }
+    if (!key) return { ok: false, message: 'Chưa có key Gemini.' };
+
+    const model = AI.model;
+    const url = AI.directBase + '/models/' + encodeURIComponent(model) +
+      ':generateContent?key=' + encodeURIComponent(key);
+    try {
+      const data = await postJSON(url, {
+        contents: [{
+          role: 'user',
+          parts: [{ text: 'Return only JSON: {"answer_text":"4","confidence":1.0} for 2+2.' }],
+        }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 128,
+          responseMimeType: 'application/json',
+        },
+      }, 30000);
+      geminiText(data);
+      return { ok: true, message: 'Key OK · ' + model + ' · ' + (Date.now() - started) + ' ms' };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (/HTTP 404|NOT_FOUND|not found/i.test(msg)) {
+        const savedKey = AI.key;
+        AI.key = key;
+        const models = await discoverModels();
+        AI.key = savedKey;
+        if (models.length) {
+          return {
+            ok: false,
+            message: 'Model "' + model + '" không dùng được. Thử model: ' + models.slice(0, 3).join(', '),
+          };
+        }
+      }
+      return { ok: false, message: 'Key lỗi: ' + shortText(msg, 140) };
+    }
   }
 
   let settingsButton = null;
@@ -713,7 +865,7 @@
       norm(ctx.question),
       (ctx.options || []).map(normOption).sort().join('|'),
     ].join('||');
-    return 'studyHintAI:1:' + hash32(base);
+    return 'studyHintAI:2:' + hash32(base);
   };
 
   const memoryKey = (ctx) => [
@@ -746,8 +898,9 @@
       const raw = store.get(key);
       if (!raw) return null;
       const d = JSON.parse(raw);
-      const ttl = d.a ? 30 * 864e5 : 36e5;
-      if (!d || Date.now() - d.t > ttl) return null;
+      if (!d || typeof d !== 'object' || !d.t) return null;
+      const ttl = d.a ? 30 * 864e5 : 10 * 60e3;
+      if (Date.now() - d.t > ttl) return null;
       return d;
     } catch (_) {
       return null;
@@ -770,15 +923,19 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  function postJSON(url, payload) {
+  function requestJSON(method, url, payload, timeoutMs) {
     return new Promise((resolve, reject) => {
+      const timeout = timeoutMs || 30000;
+      const headers = payload ? { 'Content-Type': 'application/json' } : {};
+      const body = payload ? JSON.stringify(payload) : undefined;
+
       if (typeof GM_xmlhttpRequest === 'function') {
         GM_xmlhttpRequest({
-          method: 'POST',
+          method,
           url,
-          headers: { 'Content-Type': 'application/json' },
-          data: JSON.stringify(payload),
-          timeout: 30000,
+          headers,
+          data: body,
+          timeout,
           onload: (r) => {
             let data = null;
             try { data = JSON.parse(r.responseText || '{}'); } catch (_) {}
@@ -792,11 +949,11 @@
       }
 
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30000);
+      const timer = setTimeout(() => ctrl.abort(), timeout);
       fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        method,
+        headers,
+        body,
         signal: ctrl.signal,
       }).then(async (r) => {
         clearTimeout(timer);
@@ -809,6 +966,9 @@
       });
     });
   }
+
+  const postJSON = (url, payload) => requestJSON('POST', url, payload);
+  const getJSON = (url) => requestJSON('GET', url);
 
   /* ---------- direct Gemini (no server) ---------- */
 
@@ -872,81 +1032,229 @@
   function geminiText(data) {
     const candidates = data && data.candidates;
     if (!candidates || !candidates.length) {
-      const blocked = data && data.promptFeedback && data.promptFeedback.blockReason;
+      const fb = data && data.promptFeedback;
+      const blocked = fb && (fb.blockReason || fb.blockReasonMessage);
       throw new Error(blocked ? 'Gemini blocked: ' + blocked : 'Gemini no candidates');
     }
-    const parts = (candidates[0].content && candidates[0].content.parts) || [];
-    const text = parts.map((p) => String(p.text || '')).join('').trim();
-    if (!text) throw new Error('Gemini empty response');
+    const cand = candidates[0] || {};
+    const parts = (cand.content && cand.content.parts) || [];
+    const text = parts
+      .filter((p) => p && !p.thought)
+      .map((p) => String(p.text || ''))
+      .join('')
+      .trim();
+    if (!text) {
+      const reason = String(cand.finishReason || '');
+      if (/MAX_TOKENS/.test(reason)) throw new Error('Gemini MAX_TOKENS (câu trả lời bị cắt)');
+      if (/SAFETY|RECITATION|BLOCKLIST|PROHIBITED|SPII/.test(reason)) {
+        throw new Error('Gemini blocked: ' + reason);
+      }
+      throw new Error('Gemini empty response');
+    }
     return text;
   }
 
   function parseModelJSON(text) {
-    let value = String(text || '').trim();
-    value = value.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    let value = String(text || '').trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+
     const start = value.indexOf('{');
     const end = value.lastIndexOf('}');
-    if (start < 0 || end < start) throw new Error('AI JSON');
-    try {
-      return JSON.parse(value.slice(start, end + 1));
-    } catch (_) {
-      throw new Error('AI JSON');
+    const chunks = [];
+    if (start >= 0 && end > start) chunks.push(value.slice(start, end + 1));
+    chunks.push(value);
+
+    for (const chunk of chunks) {
+      const cleaned = chunk
+        .replace(/[\u201c\u201d]/g, '"')
+        .replace(/,\s*([}\]])/g, '$1');
+      for (const candidate of [chunk, cleaned]) {
+        try {
+          const parsed = JSON.parse(candidate);
+          if (parsed && typeof parsed === 'object') return parsed;
+        } catch (_) {}
+      }
     }
+
+    // The model ignored the JSON instruction: pull the answer out of plain text.
+    const kv = value.match(/"?answer(?:_text|s)?"?\s*[:=]\s*("(?:[^"\\]|\\.)*"|\[[^\]]*\]|[^\n,}]+)/i);
+    if (kv) {
+      const raw = kv[1].trim();
+      try {
+        return { answer_text: JSON.parse(raw), confidence: 0.6 };
+      } catch (_) {}
+      const plain = raw.replace(/^["'`]+|["'`]+$/g, '').trim();
+      if (plain) return { answer_text: plain, confidence: 0.6 };
+    }
+
+    const plain = value
+      .replace(/^(?:final\s+)?(?:answer|correct answer|đáp án)\s*[:：-]\s*/i, '')
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .trim();
+    if (plain && plain.length <= 500 && !/[{}]/.test(plain) && !/\n/.test(plain)) {
+      return { answer_text: plain, confidence: 0.6 };
+    }
+
+    throw new Error('AI JSON');
+  }
+
+  function modelCandidates() {
+    const list = [AI.model, AI.fallbackModel];
+    if (Array.isArray(modelCache)) list.push(...modelCache);
+    return list.filter((m, i, arr) => m && arr.indexOf(m) === i).slice(0, 6);
+  }
+
+  async function discoverModels() {
+    if (Array.isArray(modelCache)) return modelCache;
+    if (!AI.key) return [];
+    try {
+      const data = await getJSON(AI.directBase + '/models?key=' + encodeURIComponent(AI.key));
+      const all = (data && data.models) || [];
+      modelCache = all
+        .filter((m) => (m.supportedGenerationMethods || []).indexOf('generateContent') >= 0)
+        .map((m) => String(m.name || '').replace(/^models\//, ''))
+        .filter((name) => /flash/i.test(name) &&
+          !/(image|tts|audio|live|robotics|transcribe|lyria|omni|computer-use|antigravity|deep-research)/i.test(name));
+    } catch (_) {
+      modelCache = [];
+    }
+    return modelCache;
   }
 
   async function solveDirect(ctx) {
     if (!AI.key) throw new Error('missing key');
     const prompt = buildDirectPrompt(ctx);
-    const models = [AI.model, AI.fallbackModel].filter((m, i, arr) => m && arr.indexOf(m) === i);
     let lastError = null;
 
-    for (const model of models) {
-      const url = AI.directBase + '/models/' + encodeURIComponent(model) +
-        ':generateContent?key=' + encodeURIComponent(AI.key);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const data = await postJSON(url, {
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0,
-              maxOutputTokens: 700,
-              responseMimeType: 'application/json',
-            },
-          });
-          return {
-            ...parseModelJSON(geminiText(data)),
-            source: 'gemini-direct:' + model,
-          };
-        } catch (e) {
-          lastError = e;
-          const message = e && e.message ? String(e.message) : '';
-          const retryable = /HTTP (429|500|502|503|504)|network|timeout/i.test(message);
-          if (retryable && attempt < 2) {
-            await sleep(700 * (attempt + 1));
-            continue;
+    for (let round = 0; round < 2; round++) {
+      let sawNotFound = false;
+      for (const model of modelCandidates()) {
+        const url = AI.directBase + '/models/' + encodeURIComponent(model) +
+          ':generateContent?key=' + encodeURIComponent(AI.key);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const data = await postJSON(url, {
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature: 0,
+                maxOutputTokens: 2048,
+                responseMimeType: 'application/json',
+              },
+            }, 45000);
+            return {
+              ...parseModelJSON(geminiText(data)),
+              source: 'gemini-direct:' + model,
+              model,
+            };
+          } catch (e) {
+            lastError = e;
+            const message = e && e.message ? String(e.message) : '';
+            AI.lastError = message;
+            // A retired model name is worth re-discovering once, not retrying.
+            if (/HTTP 404|NOT_FOUND|not found|is not supported/i.test(message)) {
+              sawNotFound = true;
+              break;
+            }
+            const retryable = /HTTP (429|500|502|503|504)|network|timeout/i.test(message);
+            if (retryable && attempt < 2) {
+              await sleep(800 * (attempt + 1));
+              continue;
+            }
+            break;
           }
-          break;
         }
       }
+
+      if (round === 0 && sawNotFound && !Array.isArray(modelCache)) {
+        const found = await discoverModels();
+        if (found.length) continue;
+      }
+      break;
     }
 
     throw lastError || new Error('AI provider unavailable');
   }
 
+  const stripAnswerNoise = (s) => cleanText(s, 2000)
+    .replace(/^(?:final\s+)?(?:answer|correct answer|đáp án|trả lời)\s*[:：-]\s*/i, '')
+    .replace(/^["'`“”]+|["'`“”]+$/g, '')
+    .trim();
+
+  const answerTextOf = (data) => {
+    if (!data || typeof data !== 'object') return null;
+    const keys = ['answer_text', 'answer', 'answers', 'correct_answer', 'correctAnswer', 'final_answer', 'result', 'text'];
+    for (const k of keys) {
+      const v = data[k];
+      if (v != null && v !== '') return v;
+    }
+    return null;
+  };
+
+  const tokensOf = (s) => norm(s).replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+
+  function similarity(a, b) {
+    const ta = tokensOf(a);
+    const tb = tokensOf(b);
+    if (!ta.length || !tb.length) return 0;
+    const setB = new Set(tb);
+    const seen = new Set();
+    let same = 0;
+    for (const t of ta) {
+      if (setB.has(t) && !seen.has(t)) { seen.add(t); same += 1; }
+    }
+    return (2 * same) / (ta.length + tb.length);
+  }
+
+  function matchOption(value, options) {
+    const target = normOption(stripAnswerNoise(value));
+    if (!target) return null;
+
+    let hits = options.filter((o) => normOption(o) === target);
+    if (hits.length === 1) return hits[0];
+
+    hits = options.filter((o) => {
+      const no = normOption(o);
+      if (!no) return false;
+      if (no === target) return true;
+      const min = Math.min(no.length, target.length);
+      return min >= 4 && (no.indexOf(target) >= 0 || target.indexOf(no) >= 0);
+    });
+    if (hits.length === 1) return hits[0];
+
+    let best = null;
+    let bestScore = 0;
+    let tied = false;
+    for (const o of options) {
+      const score = similarity(target, o);
+      if (score > bestScore + 0.001) {
+        best = o;
+        bestScore = score;
+        tied = false;
+      } else if (Math.abs(score - bestScore) <= 0.001 && score >= 0.8) {
+        tied = true;
+      }
+    }
+    return best && bestScore >= 0.8 && !tied ? best : null;
+  }
+
   function validateAI(ctx, data) {
-    let raw = data && data.answer_text;
-    const conf = Number(data && data.confidence);
+    let raw = answerTextOf(data);
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      raw = raw.text || raw.answer || raw.value || null;
+    }
+    const confRaw = Number(data && (data.confidence != null ? data.confidence : data.conf));
+    const conf = Number.isFinite(confRaw) ? confRaw : 0.75;
     if (raw == null || (Array.isArray(raw) && !raw.length)) {
       return { ok: false, reason: (data && data.error) || 'empty' };
     }
-    if (!Number.isFinite(conf) || conf < AI.minConfidence) {
-      return { ok: false, reason: 'low' };
-    }
+    if (conf < AI.minConfidence) return { ok: false, reason: 'low' };
 
     // If the server/model returned an option letter, map it to content first.
     const mapAlpha = (value) => {
       if (typeof value === 'string' && ctx.options.length) {
-        const m = value.match(/^\s*([A-H])\s*[\.)\-:]?\s*$/i);
+        const m = value.match(/^\s*(?:option\s*)?([A-H])\s*[\.)\-:]?\s*$/i);
         if (m) {
           const idx = m[1].toUpperCase().charCodeAt(0) - 65;
           if (idx >= 0 && idx < ctx.options.length) return ctx.options[idx];
@@ -956,44 +1264,54 @@
     };
     raw = Array.isArray(raw) ? raw.map(mapAlpha) : mapAlpha(raw);
 
-    let list = toList(raw).map((x) => cleanText(x, 2000)).filter(Boolean);
+    let list = toList(raw).map(stripAnswerNoise).filter(Boolean);
     if (!list.length) return { ok: false, reason: 'empty' };
 
     if (ctx.type === 'fill_multi') {
-      if (!Array.isArray(raw) || list.length !== Math.max(1, ctx.blanks || 0)) {
-        return { ok: false, reason: 'bad_count' };
-      }
+      const need = Math.max(1, ctx.blanks || 0);
+      if (list.length < need) return { ok: false, reason: 'bad_count', raw: list };
+      if (list.length > need) list = list.slice(0, need);
       return { ok: true, answer: list, confidence: conf };
     }
 
     if (ctx.type === 'essay') {
-      if (list.length !== 1) return { ok: false, reason: 'bad_essay' };
+      if (list.length !== 1) list = [list.join(' ')];
+      if (!list[0]) return { ok: false, reason: 'bad_essay' };
       if (list[0].length > 2000) list[0] = list[0].slice(0, 2000).trim();
       return { ok: true, answer: list[0], confidence: conf };
     }
 
     if (ctx.options.length) {
-      if (ctx.type === 'mcq' && list.length !== 1) {
-        return { ok: false, reason: 'bad_count' };
-      }
       const picked = [];
       for (const a of list) {
-        const matches = ctx.options.filter((o) => normOption(o) === normOption(a));
-        if (matches.length !== 1) return { ok: false, reason: 'no_match' };
-        picked.push(matches[0]);
+        const hit = matchOption(a, ctx.options);
+        if (hit && picked.indexOf(hit) < 0) picked.push(hit);
       }
-      if (new Set(picked.map(normOption)).size !== picked.length) {
-        return { ok: false, reason: 'duplicate' };
-      }
-      return { ok: true, answer: ctx.type === 'mcq' ? picked[0] : picked, confidence: conf };
+      if (!picked.length) return { ok: false, reason: 'no_match', raw: list };
+      return {
+        ok: true,
+        answer: ctx.type === 'mcq' ? picked[0] : picked,
+        confidence: conf,
+      };
     }
 
-    if (list.length !== 1) return { ok: false, reason: 'bad_count' };
-    if (!list[0].trim() || list[0].length > 500) return { ok: false, reason: 'bad_fill' };
+    if (list.length !== 1) list = [list.join(' ')];
+    if (!list[0].trim() || list[0].length > 1000) return { ok: false, reason: 'bad_fill' };
     return { ok: true, answer: list[0], confidence: conf };
   }
 
-  async function solveWithAI(ctx) {
+  const shortText = (s, n) => {
+    const limit = n || 120;
+    const t = cleanText(s, limit + 1);
+    return t.length > limit ? t.slice(0, limit - 1) + '…' : t;
+  };
+
+  const pinPanel = (ctx) => {
+    stickyKey = cacheKey(ctx);
+    stickyUntil = Date.now() + 45000;
+  };
+
+  async function solveWithAI(ctx, force) {
     if (!hasAI()) {
       openSettings();
       return;
@@ -1008,23 +1326,31 @@
       return;
     }
 
-    const remembered = recallAI(ctx);
-    if (remembered != null) {
-      ctx.apply(remembered);
-      return;
-    }
-
-    const key = cacheKey(ctx);
-    const cached = readCache(key);
-    if (cached) {
-      if (cached.a) {
-        rememberAI(ctx, cached.a);
-        ctx.apply(cached.a);
-        if (ctx.type === 'mcq' || ctx.type === 'multi') setPanel('AI ' + Math.round((cached.c || 0) * 100) + '%');
-      } else {
-        setPanel('AI không chắc');
+    if (!force) {
+      const remembered = recallAI(ctx);
+      if (remembered != null) {
+        AI.lastError = '';
+        ctx.apply(remembered);
+        if (ctx.type === 'mcq' || ctx.type === 'multi') {
+          setPanel(formatMcqAnswer(remembered, ctx.options));
+        }
+        return;
       }
-      return;
+
+      const cached = readCache(cacheKey(ctx));
+      if (cached) {
+        if (cached.a) {
+          AI.lastError = '';
+          rememberAI(ctx, cached.a);
+          ctx.apply(cached.a);
+          if (ctx.type === 'mcq' || ctx.type === 'multi') {
+            setPanel(formatMcqAnswer(cached.a, ctx.options));
+          }
+        } else {
+          setPanel('AI không chắc (bấm để thử lại)', () => solveWithAI(ctx, true), 'AI giải');
+        }
+        return;
+      }
     }
 
     aiBusy = true;
@@ -1044,30 +1370,45 @@
         : await solveDirect(ctx);
       const v = validateAI(ctx, data);
       if (!v.ok) {
-        writeCache(key, null, 0);
-        const low = v.reason === 'low' || v.reason === 'low_confidence';
-        setPanel(low ? 'AI không chắc' : 'AI không khớp đáp án');
+        writeCache(cacheKey(ctx), null, 0);
+        pinPanel(ctx);
+        if (v.reason === 'low') {
+          setPanel('AI không chắc (bấm để thử lại)', () => solveWithAI(ctx, true), 'AI giải');
+        } else if (v.raw && v.raw.length) {
+          setPanel('AI trả lời: ' + shortText(formatAnswer(v.raw), 90), () => solveWithAI(ctx, true), 'Thử lại');
+        } else {
+          setPanel('AI không khớp đáp án', () => solveWithAI(ctx, true), 'Thử lại');
+        }
         return;
       }
-      writeCache(key, v.answer, v.confidence);
+      writeCache(cacheKey(ctx), v.answer, v.confidence);
       rememberAI(ctx, v.answer);
+      stickyKey = '';
+      stickyUntil = 0;
+      AI.lastError = '';
       ctx.apply(v.answer);
+      const pct = Math.round(v.confidence * 100);
       if (ctx.type === 'mcq' || ctx.type === 'multi') {
-        setPanel('AI ' + Math.round(v.confidence * 100) + '%');
+        if (panel) panel.title = 'AI ' + pct + '%';
+        setPanel(formatMcqAnswer(v.answer, ctx.options) || ('AI ' + pct + '%'));
       } else {
         setPanel(formatAnswer(v.answer));
       }
     } catch (e) {
       const msg = e && e.message ? String(e.message) : '';
-      if (/missing key/i.test(msg)) {
-        setPanel('Chưa có key AI');
-      } else if (/API key|invalid key|API_KEY|permission|403/i.test(msg)) {
-        setPanel('Key AI không hợp lệ');
-      } else if (/HTTP 429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
-        setPanel('AI bị giới hạn, thử lại sau');
-      } else {
-        setPanel('AI lỗi');
-      }
+      AI.lastError = msg;
+      pinPanel(ctx);
+      console.warn('[study-hint] AI error:', msg);
+      let text;
+      if (/missing key/i.test(msg)) text = 'Chưa có key AI';
+      else if (/API key|invalid key|API_KEY|permission|403/i.test(msg)) text = 'Key AI không hợp lệ';
+      else if (/HTTP 429|quota|RESOURCE_EXHAUSTED/i.test(msg)) text = 'AI bị giới hạn, thử lại sau';
+      else if (/MAX_TOKENS/i.test(msg)) text = 'AI trả lời bị cắt, thử lại';
+      else if (/blocked/i.test(msg)) text = 'AI bị chặn nội dung';
+      else if (/AI JSON/i.test(msg)) text = 'AI trả lời sai định dạng';
+      else if (/timeout|network/i.test(msg)) text = 'Mạng lỗi, thử lại';
+      else text = 'AI lỗi: ' + shortText(msg, 70);
+      setPanel(text, () => solveWithAI(ctx, true), 'Thử lại');
     } finally {
       aiBusy = false;
     }
@@ -1124,7 +1465,9 @@
   }
 
   function azotaOptions(q) {
-    const content = Array.from(q.querySelectorAll('.item-answer .answer-content'));
+    const content = Array.from(q.querySelectorAll(
+      '.item-answer .answer-content, .item-answer [class*="answer-content"]'
+    ));
     if (content.length) {
       return content.map((el) => cleanOption(el.textContent)).filter(Boolean);
     }
@@ -1230,7 +1573,11 @@
 
   function processAzota() {
     let unknown = null;
-    const fillAnswers = [];
+    const answers = [];
+    const pushAnswer = (value, options) => {
+      const text = options && options.length ? formatMcqAnswer(value, options) : formatAnswer(value);
+      if (text && answers.indexOf(text) < 0) answers.push(text);
+    };
     let questions = Array.from(document.querySelectorAll('.azt-question'));
     if (!questions.length) {
       questions = Array.from(document.querySelectorAll('[id^="question_"]'));
@@ -1243,11 +1590,11 @@
       if (type === 'mcq' || type === 'multi') {
         if (answer) {
           markAzota(q, answer);
+          pushAnswer(answer, azotaOptions(q));
         } else {
           clearAzotaMarks(q);
           if (!unknown && isVisible(q)) {
-            const ctx = makeAzotaCtx(q, type);
-            if (!autoAsked.has(cacheKey(ctx))) unknown = ctx;
+            unknown = makeAzotaCtx(q, type);
           }
         }
         return;
@@ -1255,31 +1602,30 @@
 
       if (type === 'fill' || type === 'fill_multi' || type === 'essay') {
         if (answer) {
-          const formatted = formatAnswer(answer);
-          if (formatted && !fillAnswers.includes(formatted)) fillAnswers.push(formatted);
+          pushAnswer(answer);
         } else if (!unknown && isVisible(q)) {
-          const ctx = makeAzotaCtx(q, type);
-          if (!autoAsked.has(cacheKey(ctx))) unknown = ctx;
+          unknown = makeAzotaCtx(q, type);
         }
         return;
       }
 
       if (!unknown && isVisible(q) && azotaQuestionText(q)) {
-        const ctx = makeAzotaCtx(q, 'unknown');
-        if (!autoAsked.has(cacheKey(ctx))) unknown = ctx;
+        unknown = makeAzotaCtx(q, 'unknown');
       }
     });
 
     if (aiBusy) return;
 
-    const panelText = fillAnswers.join(' · ');
+    const shown = answers.slice(0, 4);
+    const panelText = shown.join(' · ') + (answers.length > shown.length ? ' · +' + (answers.length - shown.length) : '');
     if (unknown) {
+      maybeAuto(unknown);
+      if (stickyKey && stickyKey === cacheKey(unknown) && Date.now() < stickyUntil) return;
       setPanel(
         panelText,
-        () => hasAI() ? solveWithAI(unknown) : openSettings(),
+        () => hasAI() ? solveWithAI(unknown, true) : openSettings(),
         hasAI() ? 'AI giải' : 'Cấu hình AI'
       );
-      maybeAuto(unknown);
       return;
     }
 
@@ -1385,16 +1731,13 @@
     inputs.forEach((input) => {
       const answer = wayAnswer(input);
       if (answer) answers.push(formatAnswer(answer));
-      else if (!unknown) {
-        const ctx = makeWayCtx(input);
-        if (!autoAsked.has(cacheKey(ctx))) unknown = ctx;
-      }
+      else if (!unknown) unknown = makeWayCtx(input);
     });
 
     if (aiBusy) return true;
 
     const action = unknown
-      ? () => hasAI() ? solveWithAI(unknown) : openSettings()
+      ? () => hasAI() ? solveWithAI(unknown, true) : openSettings()
       : null;
     const label = hasAI() ? 'AI giải' : 'Cấu hình AI';
 
@@ -1402,8 +1745,9 @@
       setPanel(answers.join(' · '), action, label);
       if (unknown) maybeAuto(unknown);
     } else if (unknown) {
-      setPanel('', action, label);
       maybeAuto(unknown);
+      if (stickyKey && stickyKey === cacheKey(unknown) && Date.now() < stickyUntil) return true;
+      setPanel('', action, label);
     } else {
       hidePanel();
     }
@@ -1433,14 +1777,15 @@
     const cached = recallAI(ctx);
     if (cached != null) {
       markGenericOptions(opts, cached);
-      hidePanel();
+      setPanel(formatMcqAnswer(cached, options));
       return true;
     }
 
     maybeAuto(ctx);
+    if (stickyKey && stickyKey === cacheKey(ctx) && Date.now() < stickyUntil) return true;
     setPanel(
       '',
-      () => hasAI() ? solveWithAI(ctx) : openSettings(),
+      () => hasAI() ? solveWithAI(ctx, true) : openSettings(),
       hasAI() ? 'AI giải' : 'Cấu hình AI'
     );
     return true;
@@ -1511,14 +1856,17 @@
     let lastTouchAt = 0;
     let lastTouchToggleAt = 0;
 
+    const inOwnUI = (target) => !!(target && target.closest &&
+      target.closest('#study-hint-panel, #study-hint-settings, #study-hint-settings-btn'));
+
     document.addEventListener('dblclick', (e) => {
       if (Date.now() - lastTouchToggleAt < 600) return;
-      if (isEditable(e.target) || (e.target.closest && e.target.closest('#study-hint-settings'))) return;
+      if (isEditable(e.target) || inOwnUI(e.target)) return;
       toggleHints();
     }, true);
 
     document.addEventListener('touchend', (e) => {
-      if (isEditable(e.target) || (e.target.closest && e.target.closest('#study-hint-settings'))) return;
+      if (isEditable(e.target) || inOwnUI(e.target)) return;
       const now = Date.now();
       if (now - lastTouchAt < 350) {
         lastTouchAt = 0;
